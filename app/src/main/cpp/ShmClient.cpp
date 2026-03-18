@@ -35,14 +35,14 @@ bool ShmClient::connectShmServer() {
 
     ShareMemoryManager manager;
 
-    int shmFd = manager.createShareMemory(16 * 1024);
+    int shmFd = manager.createShareMemory(16 * 1024 * 1024);
 
-    int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (efd < 0) {
-        LOGE("eventfd create failure");
-    } else {
-        LOGD("eventfd create success");
-    }
+//    int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+//    if (efd < 0) {
+//        LOGE("eventfd create failure");
+//    } else {
+//        LOGD("eventfd create success");
+//    }
 
     if (shmFd < 0) {
         LOGD("shmFd failed");
@@ -51,7 +51,7 @@ bool ShmClient::connectShmServer() {
     }
 
     ShmIpcMessage msg, msg2;
-    msg.fds.push_back(efd);
+//    msg.fds.push_back(efd);
     msg2.fds.push_back(shmFd);
     msg.header = ShmIpcMessageHeader(1, 7, msg.fds.size());
     msg2.header = ShmIpcMessageHeader(3, 7, msg2.fds.size());
