@@ -1,0 +1,14 @@
+//
+// Created by Tom on 2026/3/19.
+//
+
+#ifndef SHMIPCCLIEN_SHMCLIENTSESSION_H
+#define SHMIPCCLIEN_SHMCLIENTSESSION_H
+
+
+class ShmClientSession {
+
+};
+
+
+#endif //SHMIPCCLIEN_SHMCLIENTSESSION_H

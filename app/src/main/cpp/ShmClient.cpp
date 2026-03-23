@@ -2,17 +2,18 @@
 // Created by Tom on 2026/3/13.
 //
 
-
-#include <fcntl.h>
 #include "ShmClient.h"
-#include "ShmLogger.h"
-#include "ShareMemoryManager.h"
 
 bool ShmClient::connectShmServer() {
 
     LOGD("start connect shm server");
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    mServerFd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    if (mServerFd == -1) {
+        LOGE("server fd is not invalid");
+        return false;
+    }
 
     struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -22,120 +23,128 @@ bool ShmClient::connectShmServer() {
 
     int len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(SHM_SERVER_DEFAULT_NAME);
 
-    int ret = connect(fd, (struct sockaddr*)&addr, len);
+    int ret = connect(mServerFd, (struct sockaddr*)&addr, len);
 
     if (ret != 0) {
         LOGD("connect shm server failure");
-        close(fd);
-        return -1;
+        close(mServerFd);
+        mServerFd = -1;
+        return false;
     }
 
     LOGD("connect shm server success");
+    startRunReadThreadLoop();
+    LOGD("start uds socket read thread loop");
 
-
-    ShareMemoryManager manager;
-
-    int shmFd = manager.createShareMemory(16 * 1024 * 1024);
-
-//    int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-//    if (efd < 0) {
-//        LOGE("eventfd create failure");
-//    } else {
-//        LOGD("eventfd create success");
-//    }
-
-    if (shmFd < 0) {
-        LOGD("shmFd failed");
-    } else {
-        LOGD("shmFd fd=%d\n", shmFd);
-    }
-
-    ShmIpcMessage msg, msg2;
-//    msg.fds.push_back(efd);
-    msg2.fds.push_back(shmFd);
-    msg.header = ShmIpcMessageHeader(1, 7, msg.fds.size());
-    msg2.header = ShmIpcMessageHeader(3, 7, msg2.fds.size());
-
-    sendShmMessageAll(fd, msg);
-    sendShmMessageAll(fd, msg2);
-
-    return fd;
+    return true;
 }
 
-int ShmClient::sendShmMessageAll(int socketFd, const ShmIpcMessage& message) {
-    struct msghdr msg{};
-    struct iovec iov[2];
-
-    auto headerBytes = message.header.serialize();
-
-    iov[0].iov_base = (void*)headerBytes.data();
-    iov[0].iov_len  = headerBytes.size();
-
-    iov[1].iov_base = (void*)message.payload.data();
-    iov[1].iov_len  = message.payload.size();
-
-    msg.msg_iov = iov;
-    msg.msg_iovlen = message.payload.empty() ? 1 : 2;
-
-    char cmsgbuf[CMSG_SPACE(sizeof(int) * message.fds.size())];
-
-    if (!message.fds.empty())
-    {
-
-        LOGD("send fds start");
-
-        msg.msg_control = cmsgbuf;
-        msg.msg_controllen = CMSG_SPACE(sizeof(int) * message.fds.size());
-
-        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-        cmsg->cmsg_level = SOL_SOCKET;
-        cmsg->cmsg_type  = SCM_RIGHTS;
-        cmsg->cmsg_len   = CMSG_LEN(sizeof(int) * message.fds.size());
-
-        memcpy(CMSG_DATA(cmsg), message.fds.data(),
-               sizeof(int) * message.fds.size());
-
-        LOGD("send fds end");
-    }
-
-    ssize_t n = sendmsg(socketFd, &msg, 0);
-
-    if (n < 0)
-    {
-        perror("sendmsg");
+int ShmClient::sendShmMessage(const ShmIpcMessage& message) const {
+    if (mServerFd == -1) {
         return -1;
     }
-
-    return 0;
+    return mShmProtocolHandler->sendShmMessage(mServerFd, message);
 }
 
-int ShmClient::sendProtocolHeader(int sock, const char* header, int fdToSend) {
-    struct msghdr msg{};
-    struct iovec iov;
+void ShmClient::startRunReadThreadLoop() {
+    mShmReadThreadRunning = true;
+    mShmProgressThread.reset(new std::thread(&ShmClient::messageProcessor, this));
+    mShmReadThread.reset(new std::thread(&ShmClient::serverUdsReader, this));
+}
 
-    // 1. iovec 指向 header
-    iov.iov_base = (void*)header;
-    iov.iov_len  = SHM_CLIENT_HEAD_SIZE;
+void ShmClient::stopRunReadThreadLoop() {
+    mShmReadThreadRunning = false;
+    if (mShmReadThread && mShmReadThread->joinable()) {
+        mShmReadThread->join();
+    }
+    mMessageQueue.stop();
+    if (mShmProgressThread && mShmProgressThread->joinable()) {
+        mShmProgressThread->join();
+    }
+}
 
-    msg.msg_iov = &iov;
-    msg.msg_iovlen = 1;
+void ShmClient::serverUdsReader() {
+    LOGI("ShmServer Session Thread Start");
 
-    // 2. 辅助数据缓冲区，用于发送 fd
-    char cmsgbuf[CMSG_SPACE(sizeof(int))];
-    msg.msg_control = cmsgbuf;
-    msg.msg_controllen = sizeof(cmsgbuf);
+    uint8_t udsProtocolHeader[SHM_SERVER_PROTOCOL_HEAD_SIZE];
+    std::vector<int> received_fds;
+    int ret;
 
-    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type  = SCM_RIGHTS;
-    cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+    while (mShmReadThreadRunning) {
+        ret = mShmProtocolHandler->receiveProtocolHeader(mServerFd, udsProtocolHeader, received_fds);
+        if (ret) {
+            ShmIpcMessage msg;
+            msg.header = ShmIpcMessageHeader::deserialize(udsProtocolHeader);
+            uint32_t payloadLength = msg.header.length - SHM_SERVER_PROTOCOL_HEAD_SIZE;
+            std::vector<char> payload(payloadLength);
+            if (payloadLength > 0) {
+                if (!mShmProtocolHandler->receiveProtocolPayload(mServerFd, payload.data(), payloadLength)) {
+                    LOGE("unix domain socket payload read failure");
+                    break;
+                }
+            }
+            msg.payload = std::move(payload);
+            msg.fds = std::move(received_fds);
+            mMessageQueue.push(std::move(msg));
+        }else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                continue;
+            }
+            LOGE("unix domain socket header read failure");
+            break;
+        }
+    }
+    LOGD("mServerFd close");
+    close(mServerFd);
 
-    memcpy(CMSG_DATA(cmsg), &fdToSend, sizeof(int));
+    mShmReadThreadRunning = false;
 
-    // 3. 发送
-    ssize_t n = sendmsg(sock, &msg, 0);
-    bool result = (n == SHM_CLIENT_HEAD_SIZE);
-    LOGD("sendmsg result is: %d", result);
+    mMessageQueue.stop();
+    if (mShmProgressThread && mShmProgressThread->joinable()) {
+        mShmProgressThread->join();
+    }
+    LOGI("ShmServer Session Thread Stop");
+}
 
-    return result;
+void ShmClient::messageProcessor() {
+    LOGI("client message processor thread start");
+
+    ShmIpcMessage msg;
+    while (mMessageQueue.pop(msg)) {
+        LOGI("Processing message, payload size: %zu, fds count: %zu",
+             msg.payload.size(), msg.fds.size());
+        auto messageType = static_cast<ShmProtocolType>(msg.header.type);
+        switch (messageType) {
+            case ShmProtocolType::ExchangeMetadata: {
+                LOGD("ex changed meta data.........");
+                break;
+            }
+
+            case ShmProtocolType::ShareMemoryByMemfd: {
+                break;
+            }
+
+            case ShmProtocolType::SyncEvent: {
+                clientSyncEvent(msg);
+                break;
+            }
+
+            case ShmProtocolType::AckShareMemory: {
+
+            }
+
+            default:
+                break;
+        }
+    }
+
+    LOGI("client message processor thread stop");
+}
+
+void ShmClient::clientSyncEvent(const ShmIpcMessage &message) {
+    LOGD("clientSyncEvent");
+}
+
+void ShmClient::ackShareMemory(const ShmIpcMessage &message) {
+    LOGD("ackShareMemory");
 }

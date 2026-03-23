@@ -29,6 +29,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         native-lib.cpp
         ShmClient.cpp
         ShareMemoryManager.cpp
+        ShmClientSession.cpp
+        ShmProtocolHandler.cpp
 )
 
 # Specifies libraries CMake should link to your target library. You
