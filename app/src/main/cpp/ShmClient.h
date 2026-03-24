@@ -68,6 +68,7 @@ public:
 
     void handleShareMemoryReady();
     void readFromShm();
+    void handleMessage(const std::vector<uint8_t>& data);
 };
 
 static ShmClient shmClient;

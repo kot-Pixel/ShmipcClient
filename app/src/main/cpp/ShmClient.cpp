@@ -326,8 +326,7 @@ void ShmClient::readFromShm() {
             LOGE("Incomplete data, remaining=%u", remaining);
         }
 
-        std::string msg((char*)out.data(), out.size());
-        LOGI("msg str is %s", msg.c_str());
+        handleMessage(out);
 
         idx = slice_index;
         while (idx != INVALID_INDEX) {
@@ -352,5 +351,38 @@ void ShmClient::readFromShm() {
         queue->head.store((head + 1) % queue->capacity,
                           std::memory_order_release);
     }
+}
+
+void ShmClient::handleMessage(const std::vector<uint8_t>& data) {
+    if (data.size() < 8) {
+        LOGE("invalid packet size");
+        return;
+    }
+
+    const uint32_t* p = (const uint32_t*)data.data();
+
+    uint32_t seq = p[0];
+    uint32_t len = p[1];
+
+    LOGI("recv packet seq=%u len=%u real_size=%zu",
+         seq, len, data.size());
+
+    if (data.size() != 8 + len) {
+        LOGE("length mismatch!");
+        return;
+    }
+
+    const uint8_t* payload = data.data() + 8;
+
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t expected = (uint8_t)(i % 256);
+        if (payload[i] != expected) {
+            LOGE("data mismatch at %u: %u != %u",
+                 i, payload[i], expected);
+            return;
+        }
+    }
+
+    LOGI("packet %u verified OK ✅", seq);
 }
 
