@@ -67,6 +67,7 @@ public:
     }
 
     void handleShareMemoryReady();
+    void readFromShm();
 };
 
 static ShmClient shmClient;

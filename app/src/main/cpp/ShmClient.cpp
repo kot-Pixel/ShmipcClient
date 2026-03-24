@@ -147,6 +147,7 @@ void ShmClient::messageProcessor() {
 
 void ShmClient::clientSyncEvent(const ShmIpcMessage &message) {
     LOGD("clientSyncEvent");
+    readFromShm();
 }
 
 void ShmClient::setShmIpcMetaData(uint32_t shmSize, uint32_t sliceSize, uint32_t eventQueueSize,
@@ -266,6 +267,90 @@ void ShmClient::handleShareMemoryReady() {
         LOGD("ShmBufferManager: io_queue capacity=%u, slice_count=%u\n",
              mgr->io_queue.capacity,
              mgr->buffer_list.slice_count);
+    }
+}
+
+
+void ShmClient::readFromShm() {
+    if (mgr == nullptr) {
+        LOGE("BufferManager is null");
+        return;
+    }
+
+    auto* queue = &mgr->io_queue;
+    auto* list  = &mgr->buffer_list;
+
+    while (true) {
+        uint32_t head = queue->head.load(std::memory_order_acquire);
+        uint32_t tail = queue->tail.load(std::memory_order_acquire);
+
+        if (head == tail) {
+            break;
+        }
+
+        ShmBufferEvent& event = queue->events[head];
+
+        uint32_t slice_index = event.slice_index;
+        uint32_t total_len   = event.length;
+
+        if (slice_index == INVALID_INDEX) {
+            LOGE("Invalid slice_index");
+            queue->head.store((head + 1) % queue->capacity,
+                              std::memory_order_release);
+            continue;
+        }
+
+        std::vector<uint8_t> out;
+        out.reserve(total_len);
+
+        uint32_t remaining = total_len;
+        uint32_t idx = slice_index;
+
+        while (idx != INVALID_INDEX && remaining > 0) {
+            ShmBufferSlice& slice = list->slices[idx];
+
+            uint32_t copy_len = std::min(
+                    remaining,
+                    slice.length
+            );
+
+            out.insert(out.end(),
+                       slice.data,
+                       slice.data + copy_len);
+
+            remaining -= copy_len;
+            idx = slice.next;
+        }
+
+        if (remaining != 0) {
+            LOGE("Incomplete data, remaining=%u", remaining);
+        }
+
+        std::string msg((char*)out.data(), out.size());
+        LOGI("msg str is %s", msg.c_str());
+
+        idx = slice_index;
+        while (idx != INVALID_INDEX) {
+            ShmBufferSlice& slice = list->slices[idx];
+            uint32_t next = slice.next;
+
+            // push back to free list (lock-free stack)
+            uint32_t old_head = list->free_head.load(std::memory_order_acquire);
+
+            do {
+                slice.next = old_head;
+            } while (!list->free_head.compare_exchange_weak(
+                    old_head,
+                    idx,
+                    std::memory_order_release,
+                    std::memory_order_acquire
+            ));
+
+            idx = next;
+        }
+
+        queue->head.store((head + 1) % queue->capacity,
+                          std::memory_order_release);
     }
 }
 
