@@ -25,8 +25,8 @@ enum class ShmProtocolType : uint8_t {
     ShareMemoryByMemfd = 3,       // 通过 memfd 映射共享内存
     AckReadyRecvFD = 4,           // 已做好准备接收 memfd
     AckShareMemory = 5,           // 完成共享内存映射
-    SyncEvent = 6,                 // 同步事件
-    FallbackData = 7               // 共享内存不足时的回退数据
+    ShareMemoryReady = 6,           // 完成共享内存映射
+    SyncEvent = 7                 // 同步事件
 };
 
 class ShmProtocolHandler {

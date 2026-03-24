@@ -6,26 +6,29 @@
 #include "ShareMemoryManager.h"
 
 
-int ShareMemoryManager::createShareMemory(int size) {
-    int fd = syscall(SYS_memfd_create, SHARE_MEMORY_NAME, MFD_CLOEXEC);
-    if (fd < 0) {
+bool ShareMemoryManager::createShareMemory(int size) {
+    shareMemoryFd = syscall(SYS_memfd_create, SHARE_MEMORY_NAME, MFD_CLOEXEC);
+    if (shareMemoryFd < 0) {
         LOGI("memfd_create failed");
+        shareMemoryFd = -1;
         return -1;
     }
 
-    if (ftruncate(fd, size) < 0) {
+    if (ftruncate(shareMemoryFd, size) < 0) {
         LOGI("ftruncate failed");
-        close(fd);
+        close(shareMemoryFd);
+        shareMemoryFd = -1;
         return -1;
     }
 
-    void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (addr == MAP_FAILED) {
+    shareMemoryAddr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, shareMemoryFd, 0);
+    if (shareMemoryAddr == MAP_FAILED) {
         LOGE("mmap failed");
-        close(fd);
+        close(shareMemoryFd);
+        shareMemoryFd = -1;
         return -1;
     }
 
-    memset(addr, 0, size);
-    return fd;
+    memset(shareMemoryAddr, 0, size);
+    return true;
 }

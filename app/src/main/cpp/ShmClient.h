@@ -17,10 +17,16 @@
 #include "ShmIpcMessage.h"
 #include "ShmMessageQueue.h"
 #include "ShmProtocolHandler.h"
+#include "ShmMetadata.h"
+#include "ShmBufferManager.h"
 
 class ShmClient {
 
 private:
+
+    //protocol metadata
+    ShmMetadata shmMetadata{};
+
     int mServerFd = -1;
     ShmMessageQueue mMessageQueue;
     std::atomic<bool> mShmReadThreadRunning{};
@@ -31,18 +37,36 @@ private:
     void serverUdsReader();
     void messageProcessor();
     void clientSyncEvent(const ShmIpcMessage &message);
-    void ackShareMemory(const ShmIpcMessage &message);
+
+    ShmMetadata buildDefaultMetaData();
+
+    ShareMemoryManager manager;
+
+    ShmBufferManager* mgr = nullptr;
+
 public:
 
     bool connectShmServer();
     void startRunReadThreadLoop();
     void stopRunReadThreadLoop();
     int sendShmMessage(const ShmIpcMessage& message) const;
+
+    void setShmIpcMetaData(uint32_t shmSize, uint32_t sliceSize,
+                           uint32_t eventQueueSize, uint32_t sliceInvalidNext, uint32_t flags);
+
+    void sendExchangeMetadata();
+
+    void handleExchangeMetaData(const ShmIpcMessage &message);
+
+    void handleAckReadyRecFd();
+
     ShmClient() = default;
 
     ~ShmClient() {
         stopRunReadThreadLoop();
     }
+
+    void handleShareMemoryReady();
 };
 
 static ShmClient shmClient;

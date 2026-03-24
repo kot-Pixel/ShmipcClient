@@ -17,7 +17,11 @@
 
 class ShareMemoryManager {
 public:
-    int createShareMemory(int size);
+    int shareMemoryFd = -1;
+    void* shareMemoryAddr = MAP_FAILED;
+    bool createShareMemory(int size);
+    ShareMemoryManager() = default;
+    ~ShareMemoryManager() = default;
 };
 
 
