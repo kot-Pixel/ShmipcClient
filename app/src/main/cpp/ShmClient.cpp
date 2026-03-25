@@ -271,7 +271,8 @@ void ShmClient::handleShareMemoryReady() {
 }
 
 
-void ShmClient::readFromShm() {
+void ShmClient::readFromShm()
+{
     if (mgr == nullptr) {
         LOGE("BufferManager is null");
         return;
@@ -279,6 +280,9 @@ void ShmClient::readFromShm() {
 
     auto* queue = &mgr->io_queue;
     auto* list  = &mgr->buffer_list;
+    uint32_t capacity = queue->capacity;
+
+    bool processed_any = false;
 
     while (true) {
         uint32_t head = queue->head.load(std::memory_order_acquire);
@@ -288,38 +292,35 @@ void ShmClient::readFromShm() {
             break;
         }
 
-        ShmBufferEvent& event = queue->events[head];
+        processed_any = true;
+
+        uint32_t idx = head % capacity;
+        ShmBufferEvent& event = queue->events[idx];
 
         uint32_t slice_index = event.slice_index;
         uint32_t total_len   = event.length;
 
         if (slice_index == INVALID_INDEX) {
             LOGE("Invalid slice_index");
-            queue->head.store((head + 1) % queue->capacity,
-                              std::memory_order_release);
+            queue->head.store((head + 1) % capacity, std::memory_order_release);
             continue;
         }
 
+        // === 你的原有数据拷贝和处理逻辑（保持不变）===
         std::vector<uint8_t> out;
         out.reserve(total_len);
 
         uint32_t remaining = total_len;
-        uint32_t idx = slice_index;
+        uint32_t data_idx = slice_index;
 
-        while (idx != INVALID_INDEX && remaining > 0) {
-            ShmBufferSlice& slice = list->slices[idx];
+        while (data_idx != INVALID_INDEX && remaining > 0) {
+            ShmBufferSlice& slice = list->slices[data_idx];
 
-            uint32_t copy_len = std::min(
-                    remaining,
-                    slice.length
-            );
-
-            out.insert(out.end(),
-                       slice.data,
-                       slice.data + copy_len);
+            uint32_t copy_len = std::min(remaining, slice.length);
+            out.insert(out.end(), slice.data, slice.data + copy_len);
 
             remaining -= copy_len;
-            idx = slice.next;
+            data_idx = slice.next;
         }
 
         if (remaining != 0) {
@@ -328,28 +329,27 @@ void ShmClient::readFromShm() {
 
         handleMessage(out);
 
-        idx = slice_index;
-        while (idx != INVALID_INDEX) {
-            ShmBufferSlice& slice = list->slices[idx];
+        data_idx = slice_index;
+        while (data_idx != INVALID_INDEX) {
+            ShmBufferSlice& slice = list->slices[data_idx];
             uint32_t next = slice.next;
 
-            // push back to free list (lock-free stack)
             uint32_t old_head = list->free_head.load(std::memory_order_acquire);
-
             do {
                 slice.next = old_head;
             } while (!list->free_head.compare_exchange_weak(
-                    old_head,
-                    idx,
+                    old_head, data_idx,
                     std::memory_order_release,
-                    std::memory_order_acquire
-            ));
+                    std::memory_order_acquire));
 
-            idx = next;
+            data_idx = next;
         }
 
-        queue->head.store((head + 1) % queue->capacity,
-                          std::memory_order_release);
+        queue->head.store((head + 1) % capacity, std::memory_order_release);
+    }
+
+    if (processed_any) {
+        queue->workingFlags.fetch_and(~WORKING_FLAG, std::memory_order_release);
     }
 }
 
